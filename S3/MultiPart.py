@@ -7,6 +7,7 @@ from stat import ST_SIZE
 from logging import debug, info, warning, error
 from Utils import getTextFromXml, formatSize, unicodise
 from Exceptions import S3UploadError
+from gevent.pool import Pool
 
 class MultiPartUpload(object):
 
@@ -46,6 +47,7 @@ class MultiPartUpload(object):
         self.chunk_size = self.s3.config.multipart_chunk_size_mb * 1024 * 1024
         nr_parts = file_size / self.chunk_size + (file_size % self.chunk_size and 1)
         debug("MultiPart: Uploading %s in %d parts" % (self.file.name, nr_parts))
+        pool = Pool(1000)
 
         seq = 1
         while size_left > 0:
@@ -57,13 +59,15 @@ class MultiPartUpload(object):
                 'destination' : unicodise(self.uri.uri()),
                 'extra' : "[part %d of %d, %s]" % (seq, nr_parts, "%d%sB" % formatSize(current_chunk_size, human_readable = True))
             }
-            try:
-                self.upload_part(seq, offset, current_chunk_size, labels)
-            except:
-                error(u"Upload of '%s' part %d failed. Aborting multipart upload." % (self.file.name, seq))
-                self.abort_upload()
-                raise
+            pool.spawn(self.upload_part, seq, offset, current_chunk_size, labels)
             seq += 1
+
+        try:
+            pool.join()
+        except Exception, e:
+            error(u"Upload of '%s' part %d failed. Aborting multipart upload." % (self.file.name, seq))
+            self.abort_upload()
+            raise
 
         debug("MultiPart: Upload finished: %d parts", seq - 1)
 
