@@ -6,7 +6,7 @@
 import sys
 import os, os.path
 import time
-import httplib
+from gevent import httplib
 import logging
 import mimetypes
 import re

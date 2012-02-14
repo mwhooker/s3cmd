@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 ## Amazon S3 manager
 ## Author: Michal Ludvig <michal@logix.cz>
@@ -11,6 +11,7 @@ if float("%d.%d" %(sys.version_info[0], sys.version_info[1])) < 2.4:
     sys.stderr.write("ERROR: Python 2.4 or higher required, sorry.\n")
     sys.exit(1)
 
+import gevent
 import logging
 import time
 import os
@@ -22,12 +23,15 @@ import codecs
 import locale
 import subprocess
 import htmlentitydefs
-import socket
 
 from copy import copy
 from optparse import OptionParser, Option, OptionValueError, IndentedHelpFormatter
 from logging import debug, info, warning, error
 from distutils.spawn import find_executable
+
+from gevent import monkey; monkey.patch_all(thread=False)
+from gevent.pool import Pool
+from gevent import socket
 
 def output(message):
     sys.stdout.write(message + "\n")
@@ -396,9 +400,8 @@ def cmd_object_get(args):
         warning(u"Exitting now because of --dry-run")
         return
 
-    seq = 0
-    for key in remote_list:
-        seq += 1
+    #for key in remote_list:
+    def _fetch((seq, key)):
         item = remote_list[key]
         uri = S3Uri(item['object_uri_str'])
         ## Encode / Decode destination with "replace" to make sure it's compatible with current encoding
@@ -433,13 +436,13 @@ def cmd_object_get(args):
                         dst_stream.truncate()
                     elif Config().skip_existing:
                         info(u"Skipping over existing file: %s" % (destination))
-                        continue
+                        return
                     else:
                         dst_stream.close()
                         raise ParameterError(u"File %s already exists. Use either of --force / --continue / --skip-existing or give it a new name." % destination)
             except IOError, e:
                 error(u"Skipping %s: %s" % (destination, e.strerror))
-                continue
+                return
         response = s3.object_get(uri, dst_stream, start_position = start_position, extra_label = seq_label)
         if response["headers"].has_key("x-amz-meta-s3tools-gpgenc"):
             gpg_decrypt(destination, response["headers"]["x-amz-meta-s3tools-gpgenc"])
@@ -448,6 +451,10 @@ def cmd_object_get(args):
             speed_fmt = formatSize(response["speed"], human_readable = True, floating_point = True)
             output(u"File %s saved as '%s' (%d bytes in %0.1f seconds, %0.2f %sB/s)" %
                 (uri, destination, response["size"], response["elapsed"], speed_fmt[0], speed_fmt[1]))
+
+    pool = Pool(1000)
+    pool.map(_fetch, enumerate(remote_list))
+
 
 def cmd_object_del(args):
     for uri_str in args:
